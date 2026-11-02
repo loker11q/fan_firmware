@@ -1,5 +1,5 @@
 # ESP32 在 VS Code 中使用 ESP-IDF 编译与烧录：排查记录
-
+2026.11.03
 > 这篇文章记录一次 ESP32 风扇项目从安装 ESP-IDF、配置工程、排查串口，到成功烧录并显示 OLED 的过程。内容按实际日志和操作整理，区分已确认结论与仍待验证事项。
 
 - **工程：** ESP32 BLDC 风扇固件，C 语言
@@ -14,7 +14,9 @@
 - [一、排查过程概览](#一排查过程概览)
 - [二、ESP-IDF 安装慢与 Python 检查失败](#二esp-idf-安装慢与-python-检查失败)
 - [三、menuconfig 自动检测串口失败](#三menuconfig-自动检测串口失败)
+  - [menuconfig 菜单翻译与配置文件对应关系](#menuconfig-菜单翻译与配置文件对应关系)
 - [四、Set Target 清理构建文件后找不到 ELF](#四set-target-清理构建文件后找不到-elf)
+  - [后续构建失败：Flash 容量与分区表不匹配](#后续构建失败flash-容量与分区表不匹配)
 - [五、USB 转串口缺少共地](#五usb-转串口缺少共地)
 - [六、手动进入下载模式与烧录结果判断](#六手动进入下载模式与烧录结果判断)
 - [七、烧录后启动崩溃并反复重启](#七烧录后启动崩溃并反复重启)
@@ -29,9 +31,10 @@
 1. ESP-IDF 安装进度很慢，Python 检查又提示缺少 `pip`。
 2. SDK Configuration Editor（SDK 配置编辑器）自动探测 COM8 时，`chip_id` 命令收到无效串口数据。
 3. `Set Target` 执行 `fullclean` 清理构建目录，之后没有先重新编译就点击 Flash，导致目标 `.elf` 不存在。
-4. USB 转串口最初只连接 RX、TX，没有连接 GND；UART 没有共同的电压参考地。
-5. 板子没有自动下载电路，需要用 KEY4/KEY5 手动控制启动模式。
-6. 固件写入后，启动日志显示程序在 UART 控制台初始化时异常并自动重启。
+4. 后续一次构建还遇到 Flash 容量与分区表不一致：当时的 Flash 容量选项是 2 MB，而 OTA 分区布局延伸到 4 MB。
+5. USB 转串口最初只连接 RX、TX，没有连接 GND；UART 没有共同的电压参考地。
+6. 板子没有自动下载电路，需要用 KEY4/KEY5 手动控制启动模式。
+7. 固件写入后，启动日志显示程序在 UART 控制台初始化时异常并自动重启。
 
 排查时需要把三个阶段分开：
 
@@ -99,6 +102,20 @@ py -0p
 
 当时结果包含系统 Python 3.9，以及 Anaconda 环境中的 Python 3.6 和 3.11。安装器后续日志则确认它使用自己的 Python 3.11.15 和 IDF 专用 `venv`。所以 `py -0p` 用来盘点电脑上的 Python，不代表 ESP-IDF 最终会使用其中某个 Anaconda 环境。
 
+查了点击后的日志：安装 Python 按钮其实已经成功安装了 Python 3.11.15，位置是 `C:\Espressif\tools\python`，而且这个 Python 的 `pip` 和 `venv` 都正常。
+
+问题是 EIM 随后的检查仍选中了 VS Code/MSYS 里的 `E:\vscode_msys\ucrt64\bin\python3.exe`，它没有 `pip`。所以现在不用再点“安装 Python”；需要让 EIM 暂时避开这个 MSYS 路径。EIM 多 Python 排查说明提到，多套 Python 同时存在时，可以通过调整启动时的 `PATH` 来指定要用的 Python。
+
+当时的临时处理方式是先关闭 EIM，再打开 PowerShell，运行以下命令：
+
+```powershell
+$msysBin = 'E:\vscode_msys\ucrt64\bin'
+$env:Path = 'C:\Espressif\tools\python\Scripts;C:\Espressif\tools\python;' + (($env:Path -split ';' | Where-Object { $_ -notlike "$msysBin*" }) -join ';')
+& 'C:\Users\用户\.espressif\eim_gui\eim-gui-windows-x64-v0.20.1.exe'
+```
+
+这只会临时调整这次启动的 EIM，不会永久修改系统 `PATH`。EIM 打开后再检查 Python。安装完成后，日常使用 ESP-IDF 不需要切换到 Anaconda 环境。
+
 从 EIM 日志看，Python 下载/配置、工具链下载解压、组件同步是分开的步骤。进度长时间不动时，日志中的下载和解压记录比界面百分比更能说明安装器正在做什么。
 
 ## 三、menuconfig 自动检测串口失败
@@ -122,6 +139,87 @@ A fatal error occurred: Could not connect to an Espressif device
 ESP32 没进入下载模式、UART 接线不正确、串口没有共同地，都可能让电脑收到不符合 esptool 协议的数据。因此看到 `Invalid head of packet` 时，不能只在软件菜单里找原因，还要检查串口物理连接和启动模式。
 
 后续检查发现转接器当时没有和板子共地（见下一节）。因此这次芯片探测失败应先按串口链路问题排查，而不是据此判断 menuconfig 或工程配置损坏。
+
+### menuconfig 菜单翻译与配置文件对应关系
+
+`idf.py menuconfig` 顶层菜单中常见的英文选项及中文含义如下。不同 ESP-IDF 版本、芯片目标和已启用组件会让部分菜单略有不同。
+
+| menuconfig 英文 | 中文含义 | 大致用途 |
+|---|---|---|
+| `Build type` | 构建类型 | 选择工程的构建方式 |
+| `Bootloader config` | 引导程序配置 | 配置 ESP32 上电后加载应用程序的引导程序 |
+| `Security features` | 安全功能 | 配置安全启动、Flash 加密等功能 |
+| `Application manager` | 应用程序管理器 | 配置应用程序启动、升级和回滚相关功能 |
+| `Serial flasher config` | 串口烧录配置 | 配置串口烧录器使用的 Flash 参数等 |
+| `Partition Table` | Flash 分区表 | 选择分区布局及分区表文件 |
+| `Fan application configuration` | 风扇应用配置 | 本项目自行定义的风扇、OLED、电池和网络参数 |
+| `Compiler options` | 编译器选项 | 配置编译器行为和编译检查 |
+| `Component config` | 组件配置 | 配置 ESP-IDF 各个软件组件 |
+
+这里的 **Kconfig** 是 ESP-IDF 用来声明和组织配置菜单的配置系统；它决定菜单选项叫什么、是什么类型、允许什么范围和默认值。
+
+本项目当前重点选项的菜单路径和文件关系：
+
+| 菜单选项 | 英文翻译/含义 | 当前项目对应的配置 |
+|---|---|---|
+| `Serial flasher config` → `Flash size` → `4 MB` | 串口烧录配置 → Flash 容量 → 4 MB | 当前值保存在 `sdkconfig` 的 `CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`；工程默认值保存在 `sdkconfig.defaults` |
+| `Partition Table` → `Custom partition table CSV` | 分区表 → 使用自定义 CSV 分区表 | 菜单定义在 ESP-IDF 的 `components/partition_table/Kconfig.projbuild`；当前选择和文件名保存在 `sdkconfig`；分区的起始地址、大小等实际布局写在工程根目录 `partitions.csv` |
+| `Fan application configuration` | 风扇应用配置 | 菜单项、英文名称、数据类型、范围和应用默认值由 `main/Kconfig.projbuild` 定义；当前选择保存在 `sdkconfig` |
+
+风扇应用菜单中的英文选项和当前默认值如下。默认值以工程里的 `main/Kconfig.projbuild` 为依据；个人 Wi-Fi 密码等敏感内容不应提交到公共仓库。
+
+| Kconfig 名称 | menuconfig 英文选项 | 中文含义 | 默认值 |
+|---|---|---|---|
+| `FAN_WIFI_SSID` | `Wi-Fi SSID` | Wi-Fi 名称 | 空 |
+| `FAN_WIFI_PASSWORD` | `Wi-Fi password` | Wi-Fi 密码 | 空 |
+| `FAN_OTA_URL` | `HTTPS OTA image URL` | HTTPS OTA 固件下载地址 | 空 |
+| `FAN_MOTOR_ENABLE` | `Enable fan PWM output` | 启用风扇 PWM 输出 | 关闭 |
+| `FAN_PWM_FREQ_HZ` | `Fan PWM frequency (Hz)` | 风扇 PWM 频率 | 0 Hz |
+| `FAN_PWM_MAX_DUTY_PERCENT` | `Maximum PWM duty (%)` | 最大 PWM 占空比 | 0% |
+| `FAN_PWM_ACTIVE_LOW` | `Fan PWM is active-low` | 风扇 PWM 是否低电平有效 | 否 |
+| `FAN_FG_PULSES_PER_REV` | `FG pulses per revolution` | FG 每转脉冲数 | 0 |
+| `FAN_BATTERY_WARN_MV` | `Battery warning threshold (mV)` | 电池低压警告阈值 | 0 mV |
+| `FAN_BATTERY_STOP_MV` | `Battery stop threshold (mV)` | 电池低压停机阈值 | 0 mV |
+| `FAN_OLED_ADDRESS` | `OLED 7-bit I2C address` | OLED 的 I²C 7 位地址 | `0x3C` |
+| `FAN_OLED_WIDTH` | `OLED width in pixels` | OLED 宽度 | 128 像素 |
+| `FAN_OLED_HEIGHT` | `OLED height in pixels` | OLED 高度 | 64 像素 |
+| `FAN_SELFTEST_FORCE_FAIL` | `Force OTA self-test failure (test only)` | 强制 OTA 自检失败（仅测试） | 关闭 |
+
+初学者可以用下面的对应关系记忆配置：
+
+```text
+Kconfig 文件：定义“菜单上有哪些选项、选项叫什么、范围和默认值”
+       ↓
+idf.py menuconfig：交互式修改当前工程的选项
+       ↓
+sdkconfig：保存当前实际选中的值
+       ↓
+sdkconfig.h：由构建系统生成，供 C 代码读取 CONFIG_... 宏
+```
+
+- 修改**本项目自定义菜单项的名称、类型、范围或默认值**：改 `main/Kconfig.projbuild`。
+- 修改**新建/重建配置时本工程采用的默认配置**：改 `sdkconfig.defaults`。例如本工程在这里默认选择 4 MB Flash 和 `partitions.csv`。
+- 修改**当前这一次工程实际选中的值**：运行 `idf.py menuconfig` 保存，结果写入 `sdkconfig`。通常不建议直接编辑 `sdkconfig.h`；它是构建生成文件。
+- ESP-IDF 自带菜单项的定义位于 ESP-IDF 安装目录的 Kconfig 文件中，例如 Flash 容量选项定义在 `components/esptool_py/Kconfig.projbuild`。通常不要改 ESP-IDF 安装目录里的文件；本项目应通过 `sdkconfig.defaults` 或 `menuconfig` 选择值。
+- 分区地址、大小和名称改 `partitions.csv`；只改 Flash 容量选项不会自动重排分区，反过来只改 CSV 也不会改变芯片真实 Flash 容量。
+
+本项目 `sdkconfig.defaults` 中和这次容量问题直接相关的设置是：
+
+```ini
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+```
+
+ESP-IDF v5.5.6 自带的 `Flash size` 选项通用默认值是 `2 MB`；本项目通过 `sdkconfig.defaults` 把工程默认值覆盖为 `4 MB`。菜单里的容量是构建配置，不是芯片自动检测结果，也不会改变实物 Flash 大小。保存后可以在 PowerShell 中检查 `sdkconfig` 是否记录了新值：
+
+```powershell
+Select-String -Path .\sdkconfig -Pattern '^CONFIG_ESPTOOLPY_FLASHSIZE'
+```
+
+4 MB 配置通常能看到 `CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y` 和 `CONFIG_ESPTOOLPY_FLASHSIZE="4MB"`。
+
+因此，这次检查 Flash 容量时要确认三者一致：**实物 Flash 容量、`sdkconfig` 中的 Flash size、`partitions.csv` 的最大分区结束地址**。
 
 ## 四、Set Target 清理构建文件后找不到 ELF
 
@@ -161,6 +259,35 @@ idf.py build
 
 VS Code 中对应的操作是先运行 **Build**，确认工程构建完成、`build\esp32_bldc_fan.elf` 已生成，再运行 **Flash**。若 Build 本身报错，Flash 阶段缺少 ELF 是后续结果，不是独立的串口故障。
 
+### 这次文件是怎样恢复的
+
+针对这条 `Set Target → fullclean → 找不到 ELF` 记录，直接恢复文件的动作是**重新成功构建工程**。`fullclean` 删除的是构建输出；Build 重新编译、链接后，才会在 `build` 目录生成新的 `.elf` 和 `.bin`。当前工程目录中的这两个文件，就是后续构建的产物。
+
+可以把当时的过程按下面顺序理解：
+
+1. **Set Target**：告诉 ESP-IDF“这个工程要编译给 ESP32 用”，并按日志执行 `fullclean`。清理的是电脑上的旧构建结果，不是 ESP32 芯片里的程序。
+2. **Build**：重新编译工程里的 C 文件，再把编译结果链接成完整程序。只有 Build 成功后，电脑的 `build` 目录里才会重新出现 `.elf` 和 `.bin`。
+3. **Flash**：把生成的固件文件通过串口写进 ESP32。Flash 需要先找到构建产物；当时它在第一步就因找不到 `.elf` 停止了，因此还没有开始和芯片通信。
+4. **手动下载模式和串口接线**：只有 Flash 已经拿到固件并开始连接芯片后，这些硬件条件才影响串口通信。按 KEY4/KEY5 或补接 GND 都不能替代 Build，也不能生成 `.elf`。
+
+几个名词可以这样记：
+
+| 名词 | 初学者理解 | 在这次问题中的作用 |
+|---|---|---|
+| `fullclean` | 删除上次编译留下的中间文件和输出文件 | 清掉旧的 `.elf`、`.bin`，所以需要重新构建 |
+| `.elf` | 编译链接后的程序文件，包含程序代码和供开发工具使用的信息 | VS Code 的这次 Flash 任务要先找到它 |
+| `.bin` | 按芯片 Flash 存储格式整理出的固件镜像 | 实际写入芯片的主要固件文件之一 |
+| Build | 编译并链接 C 程序 | 重新生成 `.elf` 和 `.bin` |
+| Flash | 把固件写入 ESP32 的 Flash 存储器 | 只有成功写入并校验后，才算完成烧录 |
+
+构建期间还处理过源代码编译兼容问题：
+
+- `Hardware/esp32/network_ota.c` 曾移除 ESP-IDF v5.5.6 中不存在的 `esp_console_repl.h` 头文件。
+- `main/app_main.c` 补上随机数接口头文件，并对未启用的 Kconfig 布尔选项使用条件编译。
+- `main/CMakeLists.txt` 增加了代码直接使用的 `esp_hw_support` 组件依赖。
+
+这些修改帮助工程通过编译；但它们本身不会生成 `.elf`。如果构建目录刚被 `fullclean` 清理，仍必须成功执行 Build，才能重新得到 `.elf`。后面 `network_ota.c` 为解决启动崩溃做的另一项修改，见[第七节](#七烧录后启动崩溃并反复重启)，与缺少构建产物不是同一个问题。
+
 ### 为什么 `Flash Done` 不能作为成功证据
 
 同一段扩展输出在 `Flash task failed` 后又出现了 `Flash Done`。这类汇总提示不能覆盖前面的明确错误。判断烧录是否真正开始，应看 esptool 是否识别芯片，并进一步看到数据写入和校验，例如：
@@ -172,6 +299,46 @@ Hash of data verified.
 ```
 
 如果停在“找不到 `.elf`”，任务尚未进入 UART 芯片通信和写入阶段；这时也不能判断下载模式是否正常。
+
+### 后续构建失败：Flash 容量与分区表不匹配
+
+这和前面的“找不到 `.elf`”是**另一次构建问题**：前者是清理后没有重新构建；这里则是构建已经启动，但分区布局超出了工程配置的 Flash 容量。
+
+#### 现象与原因
+
+根据当时的构建日志复盘，生成/检查分区表时发现 Flash 容量配置为 **2 MB**，但工程的 `partitions.csv` 按 **4 MB** 规划。OTA 两个应用分区的地址范围是：
+
+| 分区 | 起始地址 | 大小 | 结束地址 |
+|---|---:|---:|---:|
+| `ota_0` | `0x20000` | `0x1F0000` | `0x210000` |
+| `ota_1` | `0x210000` | `0x1F0000` | `0x400000` |
+
+`0x400000` 字节等于 4 MiB。也就是说，分区表最后一个 OTA 分区的末端已经到达 4 MB Flash 的边界；如果工程却按 2 MB 检查，布局会超出配置容量，分区表生成/校验失败，构建不能完成，也就不会生成新的 `esp32_bldc_fan.elf`。
+
+#### 处理步骤
+
+先确认**实物模组的 Flash 容量**，再让工程配置和分区表匹配。如果实物确认是 4 MB，按以下步骤设置：
+
+```text
+idf.py menuconfig
+  → Serial flasher config（串口烧录配置）
+  → Flash size（Flash 容量）
+  → 4 MB
+```
+
+保存并退出后再运行：
+
+```powershell
+idf.py build
+```
+
+如果实物是 2 MB，不能只把菜单改成 4 MB 来绕过错误；那会让固件按大于实际 Flash 的地址布局工作。此时需要重新规划 `partitions.csv`，让全部分区都落在 2 MB 范围内，并重新评估双 OTA 槽是否能容纳应用镜像。
+
+#### 警告与当前状态
+
+同一轮配置日志还提示 `MBEDTLS_DEFAULT_CERTIFICATE_BUNDLE` 是未知的 Kconfig 符号。它是配置警告，应单独核对 `sdkconfig.defaults` 中的拼写和当前 ESP-IDF v5.5.6 支持的选项；它不是这次 Flash 容量不匹配的原因。保留的构建输出中，该警告之后仍有完成构建的记录。
+
+本次复核工程文件时，当前 `sdkconfig` 和 `sdkconfig.defaults` 都已经选择 4 MB；保留的 `build/log/idf_py_stdout_output_39144` 还显示 `[1030/1030]`、生成 `esp32_bldc_fan.bin`，并报告最小应用分区还有 84% 空间。因此，本文把 2 MB/4 MB 不匹配记为**先前出现并已调整的构建问题**，不是当前文件仍处于 2 MB 状态的结论。当前配置值也不能代替对实物模组容量的确认。
 
 ## 五、USB 转串口缺少共地
 
@@ -268,7 +435,7 @@ app_main at main/app_main.c
 
 ### 代码处理与验证
 
-在 `Hardware/esp32/network_ota.c` 中调整初始化顺序：
+是的，`network_ota.c` 确实修改过；但这里说的是**烧录后程序启动崩溃**的修复，不是创建 `.elf` 的修复。在 `Hardware/esp32/network_ota.c` 中调整 UART 控制台初始化顺序：
 
 1. 先创建 UART REPL，让 ESP-IDF 完成控制台初始化。
 2. 再注册 `ota` 命令。
