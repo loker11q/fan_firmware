@@ -1,0 +1,73 @@
+menu "Fan application configuration"
+
+config FAN_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        Keep personal Wi-Fi credentials in the local, untracked sdkconfig file.
+
+config FAN_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+
+config FAN_OTA_URL
+    string "HTTPS OTA image URL"
+    default ""
+    help
+        This must be a direct URL to an ESP-IDF application image over HTTPS.
+
+config FAN_MOTOR_ENABLE
+    bool "Enable fan PWM output"
+    default n
+    help
+        Leave disabled until motor PWM level, polarity, and frequency are confirmed.
+
+config FAN_PWM_FREQ_HZ
+    int "Fan PWM frequency (Hz)"
+    range 0 40000
+    default 0
+
+config FAN_PWM_MAX_DUTY_PERCENT
+    int "Maximum PWM duty (%)"
+    range 0 100
+    default 0
+
+config FAN_PWM_ACTIVE_LOW
+    bool "Fan PWM is active-low"
+    default n
+
+config FAN_FG_PULSES_PER_REV
+    int "FG pulses per revolution"
+    range 0 32
+    default 0
+
+config FAN_BATTERY_WARN_MV
+    int "Battery warning threshold (mV)"
+    range 0 9000
+    default 0
+
+config FAN_BATTERY_STOP_MV
+    int "Battery stop threshold (mV)"
+    range 0 9000
+    default 0
+
+config FAN_OLED_ADDRESS
+    hex "OLED 7-bit I2C address"
+    range 0x3c 0x3d
+    default 0x3c
+
+config FAN_OLED_WIDTH
+    int "OLED width in pixels"
+    range 64 128
+    default 128
+
+config FAN_OLED_HEIGHT
+    int "OLED height in pixels"
+    range 32 64
+    default 64
+
+config FAN_SELFTEST_FORCE_FAIL
+    bool "Force OTA self-test failure (test only)"
+    default n
+
+endmenu

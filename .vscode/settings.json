@@ -1,0 +1,14 @@
+{
+    "idf.currentSetup": "G:\\ESP-IDF\\.espressif\\v5.5.6\\esp-idf",
+    "idf.flashType": "UART",
+    "idf.port": "COM8",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32"
+    },
+    "clangd.path": "G:\\ESP-IDF\\.espressif\\v5.5.6\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+    "clangd.arguments": [
+      "--background-index",
+      "--query-driver=**",
+      "--compile-commands-dir=g:\\fan_firmware\\build"
+    ]
+}
